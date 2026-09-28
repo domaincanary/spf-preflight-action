@@ -1,0 +1,54 @@
+name: DomainCanary SPF pre-flight
+description: Fail a pull request when a proposed SPF record would drop a sender that still sends mail.
+author: DomainCanary
+branding:
+  icon: shield
+  color: yellow
+inputs:
+  domain:
+    description: The domain the SPF record is for, as in example.com.
+    required: true
+  record:
+    description: The proposed SPF record text, starting with v=spf1.
+    required: true
+  api-key:
+    description: >-
+      A DomainCanary API key, stored as a repository secret. Without one the check covers syntax,
+      the 10-lookup limit and which addresses the change removes. With one, it also checks the
+      removed addresses against the senders in your DMARC reports from the last 90 days.
+    required: false
+    default: ""
+  comment:
+    description: Post the result as a pull request comment.
+    required: false
+    default: "false"
+  fail-on-warn:
+    description: Fail the check on a warning as well as on an error.
+    required: false
+    default: "false"
+outputs:
+  verdict:
+    description: pass, warn, fail or unchanged.
+    value: ${{ steps.run.outputs.verdict }}
+runs:
+  using: composite
+  steps:
+    - uses: denoland/setup-deno@v2
+      with:
+        deno-version: v2.x
+    - id: run
+      shell: bash
+      env:
+        DC_DOMAIN: ${{ inputs.domain }}
+        DC_RECORD: ${{ inputs.record }}
+        DC_API_KEY: ${{ inputs.api-key }}
+        DC_COMMENT: ${{ inputs.comment }}
+        DC_FAIL_ON_WARN: ${{ inputs.fail-on-warn }}
+        GH_TOKEN: ${{ github.token }}
+      run: >-
+        deno run --no-prompt --no-config
+        --allow-net=domaincanary.com
+        --allow-env=DC_DOMAIN,DC_RECORD,DC_API_KEY,DC_COMMENT,DC_FAIL_ON_WARN,DC_API_URL,GITHUB_OUTPUT,GITHUB_STEP_SUMMARY,GITHUB_REF,GITHUB_REPOSITORY
+        --allow-write="$GITHUB_OUTPUT,$GITHUB_STEP_SUMMARY"
+        --allow-run=gh
+        "${{ github.action_path }}/check.ts"
