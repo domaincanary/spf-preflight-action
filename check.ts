@@ -65,10 +65,68 @@ function inputs(env: (name: string) => string | undefined): Inputs {
   };
 }
 
+const VERDICTS: readonly string[] = ["pass", "warn", "fail", "unchanged"];
+const LEVELS: readonly string[] = ["error", "warning", "notice"];
+
+function isCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isText(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 2000;
+}
+
+/**
+ * The answer, checked field by field before any of it reaches the runner, or null.
+ *
+ * The verdict goes into GITHUB_OUTPUT and each level becomes a workflow command name, so an
+ * answer that is not exactly the documented shape is refused rather than printed. A green check
+ * depends on this, and the service on the other end of the call is not the runner's to trust.
+ */
+export function readAnswer(text: string, apiUrl: string): PreflightAnswer | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null) return null;
+  const a = value as Record<string, unknown>;
+  const lookups = a.lookups as Record<string, unknown> | undefined;
+  const all = a.all as Record<string, unknown> | undefined;
+  const traffic = a.traffic as Record<string, unknown> | undefined;
+  const ending = (v: unknown) => v === null || (isText(v) && /^[+\-~?]?all$/i.test(v));
+  if (
+    !isText(a.domain) || typeof a.verdict !== "string" || !VERDICTS.includes(a.verdict) ||
+    !lookups || !isCount(lookups.published) || !isCount(lookups.proposed) ||
+    !isCount(lookups.limit) || !all || !ending(all.published) || !ending(all.proposed) ||
+    !traffic || typeof traffic.checked !== "boolean" ||
+    !Array.isArray(a.removed) || !Array.isArray(a.added) || !Array.isArray(a.findings)
+  ) return null;
+  for (const r of a.removed as Record<string, unknown>[]) {
+    if (!r || !isText(r.term) || !isCount(r.ipv4_addresses) || !isCount(r.ipv6_ranges)) return null;
+    const t = r.traffic as Record<string, unknown> | null;
+    if (t !== null && (!t || !isCount(t.messages) || !isCount(t.senders))) return null;
+  }
+  for (const f of a.findings as Record<string, unknown>[]) {
+    if (!f || typeof f.level !== "string" || !LEVELS.includes(f.level) || !isText(f.text)) {
+      return null;
+    }
+  }
+  // The link in the summary only ever points at the service that was called.
+  const url = isText(a.url) && a.url.startsWith(`${apiUrl}/`) ? a.url : `${apiUrl}/tools/spf-change-check`;
+  return { ...(a as unknown as PreflightAnswer), url };
+}
+
+/** Text from the answer, made inert in Markdown: no table breaks, links, HTML or code spans. */
+export function md(text: string): string {
+  return text.replace(/\s+/g, " ").replace(/[\\`*_[\]<>|!]/g, (c) => `\\${c}`);
+}
+
 /** The job summary and the pull request comment: the same short table. */
 export function summary(answer: PreflightAnswer): string {
   const lines = [
-    `### SPF pre-flight for ${answer.domain}: ${answer.verdict}`,
+    `### SPF pre-flight for ${md(answer.domain)}: ${answer.verdict}`,
     "",
     `| | Published | Proposed |`,
     `| --- | --- | --- |`,
@@ -81,11 +139,11 @@ export function summary(answer: PreflightAnswer): string {
     lines.push("| --- | --- | --- | --- |");
     for (const r of answer.removed) {
       const traffic = r.traffic === null ? "not checked" : r.traffic.messages.toLocaleString("en-US");
-      lines.push(`| \`${r.term}\` | ${r.ipv4_addresses.toLocaleString("en-US")} | ${r.ipv6_ranges} | ${traffic} |`);
+      lines.push(`| ${md(r.term)} | ${r.ipv4_addresses.toLocaleString("en-US")} | ${r.ipv6_ranges} | ${traffic} |`);
     }
     lines.push("");
   }
-  for (const f of answer.findings) lines.push(`- **${f.level}**: ${f.text}`);
+  for (const f of answer.findings) lines.push(`- **${f.level}**: ${md(f.text)}`);
   lines.push("", `Checked by [DomainCanary](${answer.url}).`);
   return lines.join("\n") + "\n";
 }
@@ -122,7 +180,11 @@ export async function run(io: Io): Promise<number> {
     io.out(`::error::DomainCanary answered ${res.status}: ${escapeData(String(error))}`);
     return 1;
   }
-  const answer = JSON.parse(text) as PreflightAnswer;
+  const answer = readAnswer(text, given.apiUrl);
+  if (answer === null) {
+    io.out("::error::DomainCanary answered with something that is not a verdict.");
+    return 1;
+  }
 
   for (const f of answer.findings) io.out(`::${f.level}::${escapeData(f.text)}`);
 

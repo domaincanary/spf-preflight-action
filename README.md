@@ -58,32 +58,54 @@ the account page and create a new one.
 ## Getting the proposed record out of your DNS tool
 
 The action takes the record as text and doesn't read any tool's files. Add a step before it that
-prints the proposed record. These recipes have not yet been tried against a real repository.
+prints the proposed record for the domain's root name. Each recipe below searches the tool's output
+for a string starting with `v=spf1` rather than relying on field names, which change between tool
+versions. The `jq` parts were checked against sample output; none of the recipes has yet been run
+against a real repository, so check the output once before relying on it.
 
-**octoDNS**
+**octoDNS** (with [yq](https://github.com/mikefarah/yq), on the zone file you changed)
 
 ```sh
-yq '.[""][] | select(.type == "TXT") | .values[]? // .value' zones/example.com.yaml | grep '^v=spf1'
+yq '.[""] | .. | select(tag == "!!str") | select(test("^v=spf1"))' zones/example.com.yaml
 ```
 
 **DNSControl**
 
 ```sh
-dnscontrol print-ir --pretty | jq -r '.. | .target? // empty | select(startswith("v=spf1"))'
+dnscontrol print-ir 2>/dev/null \
+  | jq -r --arg zone example.com '.. | objects | select(.name? == $zone and has("records"))
+      | .records[] | select(.name == "@" or .name == $zone or .name == ($zone + "."))
+      | .. | strings | select(startswith("v=spf1"))' | sort -u
 ```
 
-**Terraform**
+If you use `SPF_BUILDER`, this prints the record it builds, split across names when it is long;
+the check needs the root record, which is the first one.
+
+**Terraform** (Cloudflare `content` or `value`, Route 53 `records`, and most other providers)
 
 ```sh
 terraform show -json plan.out \
-  | jq -r '.resource_changes[] | .change.after | select(.type? == "TXT") | (.records // [.value])[] | select(startswith("v=spf1"))'
+  | jq -r --arg name example.com '.resource_changes[].change.after
+      | select(. != null and .name == $name) | .. | strings | select(test("^\"?v=spf1"))'
 ```
+
+Some providers want the full name with a trailing dot, or `@`, in `name`; match whatever your
+resources use.
 
 **A plain file**
 
 ```sh
 cat dns/spf.txt
 ```
+
+## Pull requests from forks
+
+GitHub withholds secrets from workflows that run on pull requests from forks, so on a fork's pull
+request the action runs without a key: it checks syntax, lookups and removed addresses, and any
+removal is a warning. That is the safe default.
+
+Don't switch to `pull_request_target` to get the key into those runs. That event runs with your
+secrets, and checking out the fork's code under it hands them to whoever opened the pull request.
 
 ## GitLab, Bitbucket and anything else
 

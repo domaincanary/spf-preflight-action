@@ -77,7 +77,7 @@ Deno.test("fail: one error line per finding, verdict written, exit 1", async () 
     "::warning::100%25 of%0Athis",
   ]);
   assertEquals(h.files["/out"], "verdict=fail\n");
-  assertStringIncludes(h.files["/summary"], "| `include:esp.example` | 256 | 0 | 2,300 |");
+  assertStringIncludes(h.files["/summary"], "| include:esp.example | 256 | 0 | 2,300 |");
 });
 
 Deno.test("warn: a warning, exit 0, unless fail-on-warn", async () => {
@@ -139,4 +139,32 @@ Deno.test("comment: posted on a pull request run, a warning elsewhere", async ()
 
 Deno.test("escapeData escapes the three characters that end a command", () => {
   assertEquals(escapeData("a%b\r\nc"), "a%25b%0D%0Ac");
+});
+
+Deno.test("an answer outside the documented shape is refused before anything is printed", async () => {
+  const bad = [
+    ok({ verdict: "fail\nverdict=pass" as never }),
+    ok({ findings: [{ level: "error::x\n::notice" as never, text: "hi" }] }),
+    ok({ lookups: { published: -1, proposed: 2, limit: 10 } }),
+    { status: 200, body: "[]" },
+    { status: 200, body: "not json" },
+  ];
+  for (const answer of bad) {
+    const h = harness(answer);
+    assertEquals(await run(h.io), 1);
+    assertEquals(h.lines, ["::error::DomainCanary answered with something that is not a verdict."]);
+    assertEquals(h.files["/out"], undefined, "no output line was written");
+  }
+});
+
+Deno.test("the summary cannot be turned into links or broken tables by the answer", async () => {
+  const h = harness(ok({
+    domain: "acme.example",
+    url: "https://evil.example/",
+    findings: [{ level: "notice", text: "see [here](https://evil.example) | <img>" }],
+  }));
+  await run(h.io);
+  const summary = h.files["/summary"];
+  assertStringIncludes(summary, "see \\[here\\](https://evil.example) \\| \\<img\\>");
+  assertStringIncludes(summary, "(https://domaincanary.com/tools/spf-change-check)");
 });
