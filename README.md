@@ -4,7 +4,7 @@ Fail a pull request when a change to your SPF record would stop a sender that st
 from passing SPF. It's for teams that keep DNS in a repository: DNSControl, octoDNS, Terraform or
 a plain file.
 
-The action sends the proposed record to [DomainCanary](https://domaincanary.com/tools/spf-change-check),
+The action sends the proposed record to [DomainCanary](https://domaincanary.com/),
 which resolves both the published record and the proposed one and compares them.
 
 - **Without an API key** it checks syntax, the 10-lookup limit, a `+all` ending, and which
