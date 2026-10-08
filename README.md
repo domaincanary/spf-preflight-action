@@ -60,14 +60,32 @@ the account page and create a new one.
 The action takes the record as text and doesn't read any tool's files. Add a step before it that
 prints the proposed record for the domain's root name. Each recipe below searches the tool's output
 for a string starting with `v=spf1` rather than relying on field names, which change between tool
-versions. The `jq` parts were checked against sample output; none of the recipes has yet been run
-against a real repository, so check the output once before relying on it.
+versions. The octoDNS recipe was run against zone files that octoDNS 1.22 validates, including
+one written by `octodns-dump`. The DNSControl and Terraform recipes were checked against sample
+output only, so check what they print once before relying on them.
 
-**octoDNS** (with [yq](https://github.com/mikefarah/yq), on the zone file you changed)
+**octoDNS** (with [mikefarah's yq](https://github.com/mikefarah/yq), which GitHub's Ubuntu runners
+include; the Python package also called `yq` is a different tool and rejects this syntax). In
+place of the `record` step above, on the zone file you changed:
 
-```sh
-yq '.[""] | .. | select(tag == "!!str") | select(test("^v=spf1"))' zones/example.com.yaml
+```yaml
+- id: record
+  run: |
+    spf=$(yq '[.[""] | .. | select(tag == "!!str") | select(test("^v=spf1"))] | unique | .[]' \
+      zones/example.com.yaml)
+    n=$(printf '%s\n' "$spf" | grep -c . || true)
+    if [ "$n" -ne 1 ]; then
+      echo "::error::Expected one SPF record at the root, found $n"; exit 1
+    fi
+    echo "spf=$spf" >> "$GITHUB_OUTPUT"
 ```
+
+The step fails when the root has no SPF record, or two different ones. Receivers treat two TXT
+records starting with `v=spf1` as a permerror, and only the first line would reach the check.
+Receivers ignore the old `SPF` record type, so one that matches the `TXT` record counts once, and
+one that differs fails the step until you delete it. With `split_extension` set, the root records live in their
+own file: point the command at `'zones/example.com./$example.com.yaml'`, in single quotes so the
+shell leaves the `$` alone.
 
 **DNSControl**
 
